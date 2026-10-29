@@ -2,8 +2,6 @@
 #include <SFML/Graphics.hpp>
 #include <SFML/OpenGL.hpp>
 #include <SFML/Window.hpp>
-#include <winuser.h>
-#include <Windows.h>
 #include "geometry.cuh"
 #include "voxel.cuh"
 #include <vector>
@@ -140,7 +138,9 @@ Tga::Tga(const char* FilePath)
 // TODO переписать сообщения об ошибках на cuda error
 
 
+#ifndef M_PI
 #define M_PI 3.1415
+#endif
 #define MAP_SIZE 200
 
 
@@ -153,6 +153,9 @@ Tga::Tga(const char* FilePath)
 
 #define crossSize 64
 #define BOX_SIZE 4
+
+/* mouse look sensitivity, degrees per pixel (tunable at runtime with + / -) */
+#define MOUSE_SENSITIVITY 0.05
 
 #define MAX_FRAMES 1000
 //#define DEBUG
@@ -509,7 +512,9 @@ void traversePixels(uint3 *screen, Camera *cam, voxel* world, double3 *lightSour
     __shared__ double3 firstHitDots[512];
     __shared__ Camera sharedCam;
     __shared__ double3 firstHitDotsNormalized[512];
-    sharedCam = *cam;
+    if (threadIdx.x == 0 && threadIdx.y == 0)
+        sharedCam = *cam;
+    __syncthreads();
     double eps = 0.0000001;
     // int idx = blockIdx.x * blockDim.x + threadIdx.x;
     Box currBox = Box();
@@ -531,7 +536,6 @@ void traversePixels(uint3 *screen, Camera *cam, voxel* world, double3 *lightSour
         /** мы не коснулись ничего = небо */
         color = make_uchar3(21, 4, 133);
     } else if (checkWorld(&currBox, world) == 1) {
-        __syncthreads();
         int3 coordinatesOfVoxel = make_int3(currBox.get_x(), currBox.get_y(), currBox.get_z());
         color = world[coordinatesOfVoxel.x * MAP_SIZE * MAP_SIZE + coordinatesOfVoxel.y * MAP_SIZE + coordinatesOfVoxel.z].color;
         double3 dir =  firstHitDots[linearThreadIdxInBlock] - *lightSource;
@@ -542,7 +546,7 @@ void traversePixels(uint3 *screen, Camera *cam, voxel* world, double3 *lightSour
                                            (static_cast<int>(lightSource->y / BOX_SIZE)),
                                            (static_cast<int>(lightSource->z / BOX_SIZE)), shadowRay, 0, world,
                                            &currBox);
-        cudaDeviceSynchronize();
+        //cudaDeviceSynchronize();
         /*if (firstHitDots[linearThreadIdxInBlock].y / BOX_SIZE == MAP_SIZE - 10)
             color = make_uint3(198, 42, 136);*/
         //cudaDeviceSynchronize();
@@ -553,9 +557,9 @@ void traversePixels(uint3 *screen, Camera *cam, voxel* world, double3 *lightSour
             /** случай когда свет дошел до точки */
             /** найти на какой грани лежит точка firstHitDot */
             firstHitDotsNormalized[linearThreadIdxInBlock] =
-                firstHitDots[linearThreadIdxInBlock] - make_double3(round(firstHitDots[linearThreadIdxInBlock].x / BOX_SIZE.) * BOX_SIZE,
-                                                                    round(firstHitDots[linearThreadIdxInBlock].y / BOX_SIZE.) * BOX_SIZE,
-                                                                    round(firstHitDots[linearThreadIdxInBlock].z / BOX_SIZE.) * BOX_SIZE);
+                firstHitDots[linearThreadIdxInBlock] - make_double3(round(firstHitDots[linearThreadIdxInBlock].x / BOX_SIZE) * BOX_SIZE,
+                                                                    round(firstHitDots[linearThreadIdxInBlock].y / BOX_SIZE) * BOX_SIZE,
+                                                                    round(firstHitDots[linearThreadIdxInBlock].z / BOX_SIZE) * BOX_SIZE);
             double3 normal = make_double3(0., 0., 0.);
             //cudaDeviceSynchronize();
             if (abs(firstHitDotsNormalized[linearThreadIdxInBlock].x) < eps)
@@ -698,10 +702,15 @@ int main() {
 
     sf::Color backgroundColor = sf::Color::Black;
     sf::RenderWindow window(sf::VideoMode(imageHeight, imageWidth), "lol");
+    window.setMouseCursorVisible(false);
+    window.setMouseCursorGrabbed(true);
+    const sf::Vector2i mouseCenter(imageWidth / 2, imageHeight / 2);
+    sf::Mouse::setPosition(mouseCenter, window);
     sf::Image image;
     image.create(imageHeight, imageWidth, sf::Color::Magenta);
 
     bool drawCross = true;
+    double mouseSensitivity = MOUSE_SENSITIVITY;
     sf::Texture crossTexture;
     if (!crossTexture.loadFromFile("cross.png", sf::IntRect(0, 0, crossSize, crossSize))) {
         fprintf(stderr, "Error loading cross.jpg\n");
@@ -738,8 +747,6 @@ int main() {
             localLight.y * MAP_SIZE +
             localLight.z].setLight();
 
-        SetCursorPos(window.getPosition().x + imageWidth / 2, window.getPosition().y + imageHeight / 2);
-        window.sf::Window::setMouseCursorVisible(false);
         dim3 threads(16,16);
         dim3 blocks(imageWidth/threads.x,imageHeight/threads.y);
 
@@ -787,6 +794,14 @@ int main() {
                 if (event.key.code == sf::Keyboard::Down) {
                     cam->speed--;
                 }
+                if (event.key.code == sf::Keyboard::Equal || event.key.code == sf::Keyboard::Add) {
+                    mouseSensitivity *= 1.25;
+                    fprintf(stderr, "mouse sensitivity: %f deg/px\n", mouseSensitivity);
+                }
+                if (event.key.code == sf::Keyboard::Hyphen || event.key.code == sf::Keyboard::Subtract) {
+                    mouseSensitivity /= 1.25;
+                    fprintf(stderr, "mouse sensitivity: %f deg/px\n", mouseSensitivity);
+                }
 
             }
             /*if (event.type == sf::Event::MouseButtonPressed){
@@ -815,13 +830,10 @@ int main() {
         if (sf::Mouse::isButtonPressed(sf::Mouse::Right)) {
             addVoxel(cam, world);
         }
-        POINT mousexy;
-        GetCursorPos(&mousexy);
-        int xt = window.getPosition().x + imageWidth / 2;
-        int yt = window.getPosition().y + imageHeight / 2;
-        cam->angleX += (xt - mousexy.x) / 6.;
-        cam->angleY += (yt - mousexy.y) / 6.;
-        SetCursorPos(xt, yt);
+        sf::Vector2i mousexy = sf::Mouse::getPosition(window);
+        cam->angleX += (mouseCenter.x - mousexy.x) * mouseSensitivity;
+        cam->angleY += (mouseCenter.y - mousexy.y) * mouseSensitivity;
+        sf::Mouse::setPosition(mouseCenter, window);
         if (cam->angleY > 89.)
             cam->angleY = 89.;
         if (cam->angleY < -89.)

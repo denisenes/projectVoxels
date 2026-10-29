@@ -2,6 +2,8 @@
 # Created by https://www.toptal.com/developers/gitignore/api/clion+all,c++,visualstudio,cuda
 # Edit at https://www.toptal.com/developers/gitignore?templates=clion+all,c++,visualstudio,cuda
 
+build/
+
 !/graphics/**
 ### C++ ###
 # Prerequisites
