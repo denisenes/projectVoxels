@@ -166,18 +166,26 @@ struct Camera {
 public:
     Camera() = default;
 
-    double3 eyePosition;
-    double angleX, angleY;
-    double speed;
+    float3 eyePosition;
+    float angleX, angleY;
+    float speed;
 
-    Camera(double3 &eye, double xAng, double yAng) :
-            angleX(xAng), angleY(yAng), eyePosition(eye), speed(0.3) {}
+    Camera(float3 &eye, float xAng, float yAng) :
+            angleX(xAng), angleY(yAng), eyePosition(eye), speed(0.3f) {}
 };
 
 struct Ray {
 public:
-    double3 source;
-    double3 direction;
+    float3 source;
+    float3 direction;
+};
+
+/* camera ray basis, computed once per frame on the host */
+struct RayBasis {
+    float3 eye;
+    float3 origin;
+    float3 right;
+    float3 down;
 };
 
 class Box {
@@ -186,87 +194,79 @@ public:
     Box() = default;
 
     __host__ __device__
-    Box(int X, int Y, int Z) : x(X), y(Y), z(Z) {
-        updateMinMax();
-    }
+    Box(int X, int Y, int Z) : x(X), y(Y), z(Z) {}
 
     __host__ __device__
-    bool intersect(const Ray &, double t0, double t1, double3 &inter1Point, double3 &inter2Point) const;
-
-    double3 bounds[2]{};
+    bool intersect(const Ray &, float t0, float t1, float3 &inter1Point, float3 &inter2Point) const;
 
     __host__ __device__
     void inc_x() {
         x++;
-        updateMinMax();
     }
 
     __host__ __device__
     void inc_y() {
         y++;
-        updateMinMax();
     }
 
     __host__ __device__
     void inc_z() {
         z++;
-        updateMinMax();
     }
 
     __host__ __device__
     void dec_x() {
         x--;
-        updateMinMax();
     }
 
     __host__ __device__
     void dec_y() {
         y--;
-        updateMinMax();
     }
 
     __host__ __device__
     void dec_z() {
         z--;
-        updateMinMax();
     }
 
     __host__ __device__
-    int get_x() { return x; }
+    int get_x() const { return x; }
 
     __host__ __device__
-    int get_y() { return y; }
+    int get_y() const { return y; }
 
     __host__ __device__
-    int get_z() { return z; }
+    int get_z() const { return z; }
+
+    /* minimum corner of the box in world coordinates */
+    __host__ __device__
+    float3 get_min() const {
+        return make_float3(x * BOX_SIZE, y * BOX_SIZE, z * BOX_SIZE);
+    }
 
 private:
     int x, y, z;
-
-    __host__ __device__
-    void updateMinMax() {
-        bounds[0] = make_double3(x * BOX_SIZE, y * BOX_SIZE, z * BOX_SIZE);
-        bounds[1] = bounds[0] + make_double3(BOX_SIZE, BOX_SIZE, BOX_SIZE);
-    }
 };
 
 // ищет пересечение луча и коробки, записывает точки в interPoint
 __host__ __device__
-bool Box::intersect(const Ray &r, double t0, double t1, double3 &inter1Point, double3 &inter2Point) const {
-    double tmin, tmax, tymin, tymax, tzmin, tzmax;
+bool Box::intersect(const Ray &r, float t0, float t1, float3 &inter1Point, float3 &inter2Point) const {
+    float3 b0 = get_min();
+    float3 b1 = b0 + make_float3(BOX_SIZE, BOX_SIZE, BOX_SIZE);
+    float tmin, tmax, tymin, tymax, tzmin, tzmax;
     if (r.direction.x >= 0) {
-        tmin = (bounds[0].x - r.source.x) / r.direction.x;
-        tmax = (bounds[1].x - r.source.x) / r.direction.x;
+        tmin = (b0.x - r.source.x) / r.direction.x;
+        tmax = (b1.x - r.source.x) / r.direction.x;
     } else {
-        tmin = (bounds[1].x - r.source.x) / r.direction.x;
-        tmax = (bounds[0].x - r.source.x) / r.direction.x;
+        tmin = (b1.x - r.source.x) / r.direction.x;
+        tmax = (b0.x - r.source.x) / r.direction.x;
     }
     if (r.direction.y >= 0) {
-        tymin = (bounds[0].y - r.source.y) / r.direction.y;
-        tymax = (bounds[1].y - r.source.y) / r.direction.y;
+        tymin = (b0.y - r.source.y) / r.direction.y;
+        tymax = (b1.y - r.source.y) / r.direction.y;
     } else {
-        tymin = (bounds[1].y - r.source.y) / r.direction.y;
-        tymax = (bounds[0].y - r.source.y) / r.direction.y;
+        tymin = (b1.y - r.source.y) / r.direction.y;
+        tymax = (b0.y - r.source.y) / r.direction.y;
     }
     if ((tmin > tymax) || (tymin > tmax))
         return false;
@@ -275,11 +275,11 @@ bool Box::intersect(const Ray &r, double t0, double t1, double3 &inter1Point, do
     if (tymax < tmax)
         tmax = tymax;
     if (r.direction.z >= 0) {
-        tzmin = (bounds[0].z - r.source.z) / r.direction.z;
-        tzmax = (bounds[1].z - r.source.z) / r.direction.z;
+        tzmin = (b0.z - r.source.z) / r.direction.z;
+        tzmax = (b1.z - r.source.z) / r.direction.z;
     } else {
-        tzmin = (bounds[1].z - r.source.z) / r.direction.z;
-        tzmax = (bounds[0].z - r.source.z) / r.direction.z;
+        tzmin = (b1.z - r.source.z) / r.direction.z;
+        tzmax = (b0.z - r.source.z) / r.direction.z;
     }
     if ((tmin > tzmax) || (tzmin > tmax))
         return false;
@@ -296,39 +296,49 @@ bool Box::intersect(const Ray &r, double t0, double t1, double3 &inter1Point, do
 }
 
 __host__ __device__
-void buildDirectionOfStraightMove(Camera *cam, double3 *move) {
-    double3 origin = make_double3(0., 0., 1.);
-    double3 xRotated = MakeRotationY((cam->angleX) * M_PI / 180.) * make_double3(1.0, 0.0, 0.0);
-    double3 result = MakeRotationY((cam->angleX) * M_PI / 180.) * origin;
-    result = MakeRotation(-cam->angleY * M_PI / 180., xRotated) * result;
+void buildDirectionOfStraightMove(Camera *cam, float3 *move) {
+    float3 origin = make_float3(0.f, 0.f, 1.f);
+    float3 xRotated = MakeRotationY((cam->angleX) * (float)M_PI / 180.f) * make_float3(1.0f, 0.0f, 0.0f);
+    float3 result = MakeRotationY((cam->angleX) * (float)M_PI / 180.f) * origin;
+    result = MakeRotation(-cam->angleY * (float)M_PI / 180.f, xRotated) * result;
     *move = result;
 }
 
 __host__ __device__
-void buildDirectionOfNotSoStraightMove(Camera *cam, double3 *move) {
-    double3 origin = make_double3(0., 0., 1.);
-    double3 xRotated = MakeRotationY((cam->angleX) * M_PI / 180.) * make_double3(1.0, 0.0, 0.0);
-    double3 result = MakeRotationY((cam->angleX) * M_PI / 180.) * origin;
-    result = MakeRotation(-cam->angleY * M_PI / 180., xRotated) * result;
-    double3 viewDirection = result;
-    double3 y = make_double3(0., 1., 0.);
+void buildDirectionOfNotSoStraightMove(Camera *cam, float3 *move) {
+    float3 origin = make_float3(0.f, 0.f, 1.f);
+    float3 xRotated = MakeRotationY((cam->angleX) * (float)M_PI / 180.f) * make_float3(1.0f, 0.0f, 0.0f);
+    float3 result = MakeRotationY((cam->angleX) * (float)M_PI / 180.f) * origin;
+    result = MakeRotation(-cam->angleY * (float)M_PI / 180.f, xRotated) * result;
+    float3 viewDirection = result;
+    float3 y = make_float3(0.f, 1.f, 0.f);
     *move = Cross(viewDirection, y);
 }
 
 __host__ __device__
-Ray computePrimRay(Camera *cam, const int i, const int j) {
-    double3 projectPlaneOrigin = make_double3(0, 0, distToViewPort);
-    double3 rightArrow = make_double3(Vw, 0, 00), downArrow = make_double3(0.0, Vh, 0.0);
-    double3 leftTopCorner = projectPlaneOrigin - rightArrow / 2 - downArrow / 2;
-    double3 hitDotOnProjectPlane = leftTopCorner
-                                   + rightArrow * (static_cast<double>(j) / imageWidth)
-                                   + downArrow * (static_cast<double>(i) / imageHeight);
-    double3 xRotated = MakeRotationY((cam->angleX) * M_PI / 180.) * make_double3(1.0, 0.0, 0.0);
-    hitDotOnProjectPlane = MakeRotationY((cam->angleX) * M_PI / 180.) * hitDotOnProjectPlane;
-    hitDotOnProjectPlane = MakeRotation(-cam->angleY * M_PI / 180., xRotated) * hitDotOnProjectPlane;
-    hitDotOnProjectPlane = hitDotOnProjectPlane + cam->eyePosition;
-    double3 dir = hitDotOnProjectPlane - cam->eyePosition;
-    return {cam->eyePosition, dir};
+RayBasis makeRayBasis(const Camera *cam) {
+    /* NOTE: rotations must be applied sequentially — Matrix3D::operator*(A,B)
+     * composes in the reverse order here, so the old "apply A then B" semantics
+     * cannot be expressed as a matrix product. */
+    Matrix3D rotY = MakeRotationY((cam->angleX) * (float)M_PI / 180.f);
+    float3 xRotated = rotY * make_float3(1.0f, 0.0f, 0.0f);
+    Matrix3D rot = MakeRotation(-cam->angleY * (float)M_PI / 180.f, xRotated);
+    RayBasis basis;
+    basis.eye = cam->eyePosition;
+    basis.origin = rot * (rotY * make_float3(-Vw / 2.f, -Vh / 2.f, distToViewPort));
+    basis.right = rot * (rotY * make_float3(Vw, 0.f, 0.f));
+    basis.down = rot * (rotY * make_float3(0.f, Vh, 0.f));
+    return basis;
+}
+
+__host__ __device__
+Ray computePrimRay(const RayBasis &basis, const int i, const int j) {
+    Ray ray;
+    ray.source = basis.eye;
+    ray.direction = basis.origin
+                    + basis.right * (static_cast<float>(j) / imageWidth)
+                    + basis.down * (static_cast<float>(i) / imageHeight);
+    return ray;
 }
 
 
@@ -343,12 +353,12 @@ bool checkWorld(Box *box, voxel* world) {
 
 /* (x, y, z) - индексы текущего бокса в world */
 __device__
-double3 traverseRay(int startX, int startY, int startZ, Ray &ray, int deep, voxel* world, Box *lastBox) {
+float3 traverseRay(int startX, int startY, int startZ, Ray &ray, int deep, voxel* world, Box *lastBox,
+                   int *hitAxis = nullptr) {
     Box currentBox = Box(startX, startY, startZ);
-    ray.direction = Normalize(&ray.direction);
-    double3 deltaT;
+    float3 deltaT;
+    float t_x, t_y, t_z;
 
-    double t_x = ((BOX_SIZE - ray.source.x) / ray.direction.x), t_y = ((BOX_SIZE - ray.source.y) / ray.direction.y), t_z = ((BOX_SIZE - ray.source.z) / ray.direction.z) ;
     if (ray.direction.x < 0) {
         deltaT.x = -BOX_SIZE / ray.direction.x;
         t_x = (floor(ray.source.x / BOX_SIZE) * BOX_SIZE
@@ -386,14 +396,16 @@ double3 traverseRay(int startX, int startY, int startZ, Ray &ray, int deep, voxe
             currentBox.get_x() >= MAP_SIZE || currentBox.get_y() >= MAP_SIZE || currentBox.get_z() >= MAP_SIZE /*||
             deep > MAP_SIZE * 2*/) {
             *lastBox = Box(-1, -1, -1);
-            return make_double3(-1., -1., -1.);
+            return make_float3(-1.f, -1.f, -1.f);
         }
-        double t = 0.;
+        float t = 0.;
+        int axis = 0;
 
         if (t_x < t_y) {
             if (t_x < t_z) {
                 t = t_x;
                 t_x += deltaT.x; // increment, next crossing along x
+                axis = 0;
                 if(ray.direction.x < 0)
                     currentBox.dec_x();
                 else
@@ -401,7 +413,8 @@ double3 traverseRay(int startX, int startY, int startZ, Ray &ray, int deep, voxe
             }
             else {
                 t = t_z;
-                t_z += deltaT.z; // increment, next crossing along x
+                t_z += deltaT.z; // increment, next crossing along z
+                axis = 2;
                 if(ray.direction.z < 0)
                     currentBox.dec_z();
                 else
@@ -411,7 +424,8 @@ double3 traverseRay(int startX, int startY, int startZ, Ray &ray, int deep, voxe
         else {
             if (t_y < t_z) {
                 t = t_y;
-                t_y += deltaT.y; // increment, next crossing along x
+                t_y += deltaT.y; // increment, next crossing along y
+                axis = 1;
                 if(ray.direction.y < 0)
                     currentBox.dec_y();
                 else
@@ -419,7 +433,8 @@ double3 traverseRay(int startX, int startY, int startZ, Ray &ray, int deep, voxe
             }
             else {
                 t = t_z;
-                t_z += deltaT.z; // increment, next crossing along x
+                t_z += deltaT.z; // increment, next crossing along z
+                axis = 2;
                 if(ray.direction.z < 0)
                     currentBox.dec_z();
                 else
@@ -428,6 +443,8 @@ double3 traverseRay(int startX, int startY, int startZ, Ray &ray, int deep, voxe
         }
         if (checkWorld(&currentBox, world)) {
             *lastBox = currentBox;
+            if (hitAxis)
+                *hitAxis = axis;
             return ray.source + ray.direction * t;
         }
         deep++;
@@ -438,7 +455,9 @@ double3 traverseRay(int startX, int startY, int startZ, Ray &ray, int deep, voxe
 __host__ __device__
 bool
 hitRay(int startX, int startY, int startZ, Ray &ray, int deep, Box &boxToDelete, Box &boxToAdd, voxel* world) {
-    const double eps = 0.000001;
+    /* float precision: hit points live at world scale (~800), so face detection
+     * cannot use a tighter epsilon than ~1e-3 of a box (BOX_SIZE = 4) */
+    const float eps = 0.001f;
     Box currentBox = Box(startX, startY, startZ);
     while (true) {
         if (currentBox.get_x() < 0 || currentBox.get_y() < 0 || currentBox.get_z() < 0 ||
@@ -446,21 +465,21 @@ hitRay(int startX, int startY, int startZ, Ray &ray, int deep, Box &boxToDelete,
             deep > 150)
             return false;
         /* A1 < A2 : точки пересечения луча и бокса */
-        double3 A1 = double3(), A2 = double3();
+        float3 A1 = make_float3(0.f, 0.f, 0.f), A2 = make_float3(0.f, 0.f, 0.f);
         if (currentBox.intersect(ray, 0, INFINITY, A1, A2)) {
             boxToAdd = currentBox;
-            double3 A2_normalized = A2 - currentBox.bounds[0];
-            if (abs(A2_normalized.x) < eps)
+            float3 A2_normalized = A2 - currentBox.get_min();
+            if (myAbs(A2_normalized.x) < eps)
                 currentBox.dec_x();
-            if (abs(A2_normalized.y) < eps)
+            if (myAbs(A2_normalized.y) < eps)
                 currentBox.dec_y();
-            if (abs(A2_normalized.z) < eps)
+            if (myAbs(A2_normalized.z) < eps)
                 currentBox.dec_z();
-            if (abs(A2_normalized.x - BOX_SIZE) < eps)
+            if (myAbs(A2_normalized.x - BOX_SIZE) < eps)
                 currentBox.inc_x();
-            if (abs(A2_normalized.y - BOX_SIZE) < eps)
+            if (myAbs(A2_normalized.y - BOX_SIZE) < eps)
                 currentBox.inc_y();
-            if (abs(A2_normalized.z - BOX_SIZE) < eps)
+            if (myAbs(A2_normalized.z - BOX_SIZE) < eps)
                 currentBox.inc_z();
             if (checkWorld(&currentBox, world)) {
                 boxToDelete = currentBox;
@@ -475,7 +494,8 @@ hitRay(int startX, int startY, int startZ, Ray &ray, int deep, Box &boxToDelete,
 // TODO нужно ли делать это в хосте?
 __host__ __device__
 void deleteVoxel(Camera *cam, voxel* world) {
-    Ray hit = computePrimRay(cam, imageWidth / 2, imageHeight / 2);
+    RayBasis basis = makeRayBasis(cam);
+    Ray hit = computePrimRay(basis, imageWidth / 2, imageHeight / 2);
     Box boxToDelete = Box(0, 0, 0), boxToAdd = Box(0, 0, 0);
     if (hitRay(static_cast<int>(cam->eyePosition.x / BOX_SIZE),
                static_cast<int>(cam->eyePosition.y / BOX_SIZE),
@@ -485,7 +505,12 @@ void deleteVoxel(Camera *cam, voxel* world) {
         int dy[] = { 0, 1, 0, -1, 0, 0 };
         int dz[] = { 0, 0, 0, 0, 1, -1 };
         for (int i = 0; i < 6; i++) {
-            world[(boxToDelete.get_x() + dx[i]) * MAP_SIZE * MAP_SIZE + (boxToDelete.get_y() + dy[i]) * MAP_SIZE + boxToDelete.get_z() + dz[i]].setInactive();
+            int nx = boxToDelete.get_x() + dx[i];
+            int ny = boxToDelete.get_y() + dy[i];
+            int nz = boxToDelete.get_z() + dz[i];
+            if (nx < 0 || ny < 0 || nz < 0 || nx >= MAP_SIZE || ny >= MAP_SIZE || nz >= MAP_SIZE)
+                continue;
+            world[nx * MAP_SIZE * MAP_SIZE + ny * MAP_SIZE + nz].setInactive();
         }
         world[boxToDelete.get_x() * MAP_SIZE * MAP_SIZE + boxToDelete.get_y() * MAP_SIZE + boxToDelete.get_z()].setInactive();
     }
@@ -494,7 +519,8 @@ void deleteVoxel(Camera *cam, voxel* world) {
 
 __host__ __device__
 void addVoxel(Camera *cam, voxel* world) {
-    Ray hit = computePrimRay(cam, imageWidth / 2, imageHeight / 2);
+    RayBasis basis = makeRayBasis(cam);
+    Ray hit = computePrimRay(basis, imageWidth / 2, imageHeight / 2);
     Box boxToAdd = Box(0, 0, 0), boxToDelete = Box(0, 0, 0);
     if (hitRay(static_cast<int>(cam->eyePosition.x / BOX_SIZE),
                static_cast<int>(cam->eyePosition.y / BOX_SIZE),
@@ -507,100 +533,64 @@ void addVoxel(Camera *cam, voxel* world) {
 
 
 __global__
-void traversePixels(uint3 *screen, Camera *cam, voxel* world, double3 *lightSource) {
-    __shared__ uint3 temp[512];
-    __shared__ double3 firstHitDots[512];
-    __shared__ Camera sharedCam;
-    __shared__ double3 firstHitDotsNormalized[512];
-    if (threadIdx.x == 0 && threadIdx.y == 0)
-        sharedCam = *cam;
-    __syncthreads();
-    double eps = 0.0000001;
-    // int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    Box currBox = Box();
-
-    uchar3 color;
+void traversePixels(uchar4 *screen, RayBasis basis, voxel* world, float3 lightSource) {
+    float eps = 0.0000001f;
 
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     int j = blockIdx.y * blockDim.y + threadIdx.y;
     int idx = j + i * blockDim.x * gridDim.x;
 
-    int linearThreadIdxInBlock = threadIdx.x + threadIdx.y * 16;
+    uchar3 color;
 
-    Ray primRay = computePrimRay(cam, i, j);
-    firstHitDots[linearThreadIdxInBlock] = traverseRay((static_cast<int>(sharedCam.eyePosition.x / BOX_SIZE)),
-                                                       (static_cast<int>(sharedCam.eyePosition.y / BOX_SIZE)),
-                                                       (static_cast<int>(sharedCam.eyePosition.z / BOX_SIZE)), primRay, 0, world, &currBox);
-    double3 emptyConst = make_double3(-1., -1., -1.);
-    if (firstHitDots[linearThreadIdxInBlock] == emptyConst) {
+    Ray primRay = computePrimRay(basis, i, j);
+    Box currBox = Box();
+    int hitAxis = -1;
+    float3 firstHitDot = traverseRay((static_cast<int>(basis.eye.x / BOX_SIZE)),
+                                     (static_cast<int>(basis.eye.y / BOX_SIZE)),
+                                     (static_cast<int>(basis.eye.z / BOX_SIZE)), primRay, 0, world, &currBox, &hitAxis);
+    float3 emptyConst = make_float3(-1.f, -1.f, -1.f);
+    if (firstHitDot == emptyConst) {
         /** мы не коснулись ничего = небо */
         color = make_uchar3(21, 4, 133);
     } else if (checkWorld(&currBox, world) == 1) {
-        int3 coordinatesOfVoxel = make_int3(currBox.get_x(), currBox.get_y(), currBox.get_z());
-        color = world[coordinatesOfVoxel.x * MAP_SIZE * MAP_SIZE + coordinatesOfVoxel.y * MAP_SIZE + coordinatesOfVoxel.z].color;
-        double3 dir =  firstHitDots[linearThreadIdxInBlock] - *lightSource;
+        int hitX = currBox.get_x(), hitY = currBox.get_y(), hitZ = currBox.get_z();
+        color = world[hitX * MAP_SIZE * MAP_SIZE + hitY * MAP_SIZE + hitZ].color;
         Ray shadowRay;
-        shadowRay.source = *lightSource;
-        shadowRay.direction = dir;
-        double3 lastLightHit = traverseRay((static_cast<int>(lightSource->x / BOX_SIZE)),
-                                           (static_cast<int>(lightSource->y / BOX_SIZE)),
-                                           (static_cast<int>(lightSource->z / BOX_SIZE)), shadowRay, 0, world,
-                                           &currBox);
-        //cudaDeviceSynchronize();
-        /*if (firstHitDots[linearThreadIdxInBlock].y / BOX_SIZE == MAP_SIZE - 10)
-            color = make_uint3(198, 42, 136);*/
-        //cudaDeviceSynchronize();
-        if (!(lastLightHit == firstHitDots[linearThreadIdxInBlock])) {
+        shadowRay.source = lightSource;
+        shadowRay.direction = firstHitDot - lightSource;
+        Box shadowBox = Box();
+        traverseRay((static_cast<int>(lightSource.x / BOX_SIZE)),
+                    (static_cast<int>(lightSource.y / BOX_SIZE)),
+                    (static_cast<int>(lightSource.z / BOX_SIZE)), shadowRay, 0, world, &shadowBox);
+        if (shadowBox.get_x() != hitX || shadowBox.get_y() != hitY || shadowBox.get_z() != hitZ) {
             /** случай когда точка падения полностью в тени */
-            color = color * 0.2;
+            color = color * 0.2f;
         } else {
             /** случай когда свет дошел до точки */
-            /** найти на какой грани лежит точка firstHitDot */
-            firstHitDotsNormalized[linearThreadIdxInBlock] =
-                firstHitDots[linearThreadIdxInBlock] - make_double3(round(firstHitDots[linearThreadIdxInBlock].x / BOX_SIZE) * BOX_SIZE,
-                                                                    round(firstHitDots[linearThreadIdxInBlock].y / BOX_SIZE) * BOX_SIZE,
-                                                                    round(firstHitDots[linearThreadIdxInBlock].z / BOX_SIZE) * BOX_SIZE);
-            double3 normal = make_double3(0., 0., 0.);
-            //cudaDeviceSynchronize();
-            if (abs(firstHitDotsNormalized[linearThreadIdxInBlock].x) < eps)
-                normal.x = -1.;
-            if (abs(firstHitDotsNormalized[linearThreadIdxInBlock].x - BOX_SIZE) < eps)
-                normal.x = +1.;
-            if (abs(firstHitDotsNormalized[linearThreadIdxInBlock].y) < eps)
-                normal.y = -1.;
-            if (abs(firstHitDotsNormalized[linearThreadIdxInBlock].y - BOX_SIZE) < eps)
-                normal.y = +1.;
-            if (abs(firstHitDotsNormalized[linearThreadIdxInBlock].z) < eps)
-                normal.z = -1.;
-            if (abs(firstHitDotsNormalized[linearThreadIdxInBlock].z - BOX_SIZE) < eps)
-                normal.z = +1.;
-            double lightIntensity = 0.2;
-            double cosx = Dot(normal, shadowRay.direction * -1.) / Magnitude(normal) / Magnitude(shadowRay.direction);
+            /** нормаль наружу через грань, через которую луч вошел в воксель */
+            float3 normal = make_float3(0.f, 0.f, 0.f);
+            if (hitAxis == 0) normal.x = (primRay.direction.x > 0.f) ? -1.f : 1.f;
+            if (hitAxis == 1) normal.y = (primRay.direction.y > 0.f) ? -1.f : 1.f;
+            if (hitAxis == 2) normal.z = (primRay.direction.z > 0.f) ? -1.f : 1.f;
 
-            double diffuser = (Magnitude(firstHitDots[linearThreadIdxInBlock] - *lightSource));
-            //cosx = 130000 * cosx / (diffuser * diffuser);
+            float lightIntensity = 0.2f;
+            float cosx = Dot(normal, shadowRay.direction * -1.f) / Magnitude(normal) / Magnitude(shadowRay.direction);
 
             if (cosx >= eps)
                 lightIntensity += cosx;
 
-
-            if (lightIntensity > 1.)
-                lightIntensity = 1.0;
+            if (lightIntensity > 1.f)
+                lightIntensity = 1.0f;
             color = color * lightIntensity;
-            //cudaDeviceSynchronize();
         }
     } else {
         /** куб Валера */
         color = make_uchar3(255, 255, 255);
     }
-    temp[linearThreadIdxInBlock].x = (static_cast<unsigned char>(color.x));
-    temp[linearThreadIdxInBlock].y = (static_cast<unsigned char>(color.y));
-    temp[linearThreadIdxInBlock].z = (static_cast<unsigned char>(color.z));
-    __syncthreads();
-    screen[idx].x = temp[linearThreadIdxInBlock].x;
-    screen[idx].y = temp[linearThreadIdxInBlock].y;
-    screen[idx].z = temp[linearThreadIdxInBlock].z;
-
+    screen[idx] = make_uchar4(static_cast<unsigned char>(color.x),
+                              static_cast<unsigned char>(color.y),
+                              static_cast<unsigned char>(color.z),
+                              255);
 }
 /*
 std::chrono::milliseconds start_time;
@@ -632,7 +622,7 @@ void generateMap(unsigned int *world) {
 
 }
 */
-bool bounds(double3 pos) {
+bool bounds(float3 pos) {
     if (pos.x >= (MAP_SIZE - 1) * BOX_SIZE || pos.y >= (MAP_SIZE - 1) * BOX_SIZE ||
         pos.z >= ((MAP_SIZE - 1) * BOX_SIZE) || pos.x <= 0 || pos.y <= 0 || pos.z <= 0)
         return false;
@@ -640,9 +630,9 @@ bool bounds(double3 pos) {
 }
 
 void printDebug(Camera *cam) {
-    printf("angleX: %lf\n", cam->angleX);
-    printf("angleY: %lf\n", cam->angleY);
-    printf("eyePosition: (%lf, %lf, %lf)\n", cam->eyePosition.x, cam->eyePosition.y, cam->eyePosition.z);
+    printf("angleX: %f\n", cam->angleX);
+    printf("angleY: %f\n", cam->angleY);
+    printf("eyePosition: (%f, %f, %f)\n", cam->eyePosition.x, cam->eyePosition.y, cam->eyePosition.z);
 }
 
 int main() {
@@ -660,19 +650,26 @@ int main() {
     float sumScreenRenderTime = 0.0;
 
     voxel *world;
-    Camera *cam;
-    uint3 *screen;
-    double3* light;
-    if (cudaMallocManaged(&world, MAP_SIZE * MAP_SIZE * MAP_SIZE * sizeof(world[0])))
-        fprintf(stderr, "cuda malloc error: world");
-    if (cudaMallocManaged(&screen, imageHeight * imageWidth * sizeof(uint3)))
-        fprintf(stderr, "cuda malloc error: screen");
-    if (cudaMallocManaged(&cam, sizeof(Camera)))
-        fprintf(stderr, "cuda malloc error: camera");
-    if (cudaMallocManaged(&light, sizeof(double3)))
-        fprintf(stderr, "cuda malloc error: light");
+    uchar4 *screen;
+    if (cudaMallocManaged(&world, MAP_SIZE * MAP_SIZE * MAP_SIZE * sizeof(world[0]))) {
+        fprintf(stderr, "cuda malloc error: world\n");
+        return 1;
+    }
+    if (cudaMallocManaged(&screen, imageHeight * imageWidth * sizeof(uchar4))) {
+        fprintf(stderr, "cuda malloc error: screen\n");
+        return 1;
+    }
+    /* managed memory is not guaranteed zeroed; every voxel's flags must start defined */
+    cudaMemset(world, 0, MAP_SIZE * MAP_SIZE * MAP_SIZE * sizeof(world[0]));
+    Camera camObj; // host-only now: the kernel takes a RayBasis by value
+    Camera *cam = &camObj;
+    float3 light;
     uint3 localLight = make_uint3(MAP_SIZE / 2, 15, MAP_SIZE / 2);
-    auto *hostScreen = static_cast<uint3 *>(malloc(imageHeight * imageWidth * sizeof(uint3)));
+    auto *hostScreen = static_cast<uchar4 *>(malloc(imageHeight * imageWidth * sizeof(uchar4)));
+    if (!hostScreen) {
+        fprintf(stderr, "malloc error: hostScreen\n");
+        return 1;
+    }
 
     int blocksCnt = 0;
     for (int i = 0; i < MAP_SIZE * MAP_SIZE * MAP_SIZE; i++) {
@@ -693,11 +690,11 @@ int main() {
     }
     cudaDeviceSynchronize();
     printf("Num of voxels: %d\n", blocksCnt);
-    double3 eyePosition = make_double3(64.636510, 1.0, 294.136342);
+    float3 eyePosition = make_float3(64.636510f, 1.0f, 294.136342f);
     cam->eyePosition = eyePosition;
-    cam->angleX = 234.833333;
-    cam->angleY = -28.666667;
-    cam->speed = 5.0;
+    cam->angleX = 234.833333f;
+    cam->angleY = -28.666667f;
+    cam->speed = 5.0f;
 
 
     sf::Color backgroundColor = sf::Color::Black;
@@ -706,8 +703,18 @@ int main() {
     window.setMouseCursorGrabbed(true);
     const sf::Vector2i mouseCenter(imageWidth / 2, imageHeight / 2);
     sf::Mouse::setPosition(mouseCenter, window);
-    sf::Image image;
-    image.create(imageHeight, imageWidth, sf::Color::Magenta);
+    /* classic delta-based mouse look state: rotation follows real mouse motion
+     * (MouseMoved event deltas) instead of the offset from the window center */
+    sf::Vector2i lastMousePos = mouseCenter;
+    sf::Vector2i mouseDelta(0, 0);
+    bool warpPending = false;
+    sf::Texture pixelsTexture;
+    if (!pixelsTexture.create(imageWidth, imageHeight)) {
+        fprintf(stderr, "sf::Texture::create error\n");
+        return 1;
+    }
+    sf::Sprite pixels;
+    pixels.setTexture(pixelsTexture);
 
     bool drawCross = true;
     double mouseSensitivity = MOUSE_SENSITIVITY;
@@ -715,17 +722,21 @@ int main() {
     if (!crossTexture.loadFromFile("cross.png", sf::IntRect(0, 0, crossSize, crossSize))) {
         fprintf(stderr, "Error loading cross.jpg\n");
     }
+    sf::Sprite crossSprite;
+    crossSprite.setTexture(crossTexture);
+    crossSprite.setPosition(imageWidth / 2. - crossSize / 2., imageHeight / 2. - crossSize / 2.);
 
-    // TODO потом перепишем
-    double3 *moveStraight;
-    cudaMallocManaged(&moveStraight, sizeof(double3));
-    double3 *moveNotStraight;
-    cudaMallocManaged(&moveNotStraight, sizeof(double3));
+    float3 moveStraight;
+    float3 moveNotStraight;
 
     double t = 0.0;
     localLight.x = static_cast<int>(10 * cos(t)) + MAP_SIZE / 2;
     localLight.y = static_cast<int>(10 * sin(t)) + MAP_SIZE / 2;
     localLight.z = 10;
+
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
 
     while (window.isOpen()) {
 
@@ -739,9 +750,9 @@ int main() {
         localLight.z = 10;
         t += 0.05;
 
-        light->x = localLight.x * BOX_SIZE + BOX_SIZE / 2.;
-        light->y = localLight.y * BOX_SIZE + BOX_SIZE / 2.;
-        light->z = localLight.z * BOX_SIZE + BOX_SIZE / 2.;
+        light.x = localLight.x * BOX_SIZE + BOX_SIZE / 2.f;
+        light.y = localLight.y * BOX_SIZE + BOX_SIZE / 2.f;
+        light.z = localLight.z * BOX_SIZE + BOX_SIZE / 2.f;
 
         world[localLight.x * MAP_SIZE * MAP_SIZE +
             localLight.y * MAP_SIZE +
@@ -753,34 +764,35 @@ int main() {
 
 
 
-        traversePixels<<<blocks, threads>>>(screen, cam, world, light);
+        traversePixels<<<blocks, threads>>>(screen, makeRayBasis(cam), world, light);
         //cudaDeviceSynchronize();
 
-        cudaEvent_t start, stop;
-        cudaEventCreate(&start);
-        cudaEventCreate(&stop);
         cudaEventRecord(start);
 
-        cudaMemcpy(hostScreen, screen, imageHeight * imageWidth * sizeof(uint3), cudaMemcpyDeviceToHost);
-
-        for (int i = 0; i < imageHeight; i++) {
-            for (int j = 0; j < imageWidth; j++) {
-                image.setPixel(j, i, sf::Color(hostScreen[i * imageWidth + j].x,
-                                               hostScreen[i * imageWidth + j].y,
-                                               hostScreen[i * imageWidth + j].z));
-            }
-        }
+        cudaMemcpy(hostScreen, screen, imageHeight * imageWidth * sizeof(uchar4), cudaMemcpyDeviceToHost);
+        pixelsTexture.update(reinterpret_cast<const sf::Uint8 *>(hostScreen));
 
         cudaEventRecord(stop);
         cudaEventSynchronize(stop);
         float milliseconds = 0;
         cudaEventElapsedTime(&milliseconds, start, stop);
         sumScreenRenderTime += milliseconds;
+        frames++;
 
         sf::Event event{};
         while (window.pollEvent(event)) {
             if (event.type == sf::Event::Closed)
                 window.close();
+            if (event.type == sf::Event::MouseMoved) {
+                sf::Vector2i pos(event.mouseMove.x, event.mouseMove.y);
+                if (warpPending && pos == mouseCenter) {
+                    /* synthetic re-centering event, not real motion */
+                    warpPending = false;
+                } else {
+                    mouseDelta += lastMousePos - pos;
+                    lastMousePos = pos;
+                }
+            }
             if (event.type == sf::Event::KeyPressed) {
                 if (event.key.code == sf::Keyboard::Escape)
                     window.close();
@@ -812,35 +824,27 @@ int main() {
             }*/
         }
 
-
-        sf::Sprite crossSprite;
-        crossSprite.setTexture(crossTexture);
-        crossSprite.setPosition(imageWidth * 4 / 2. - crossSize / 2., imageHeight * 4 / 2. - crossSize / 2.);
-
-        sf::Texture pixelsTexture;
-        pixelsTexture.loadFromImage(image);
-        sf::Sprite pixels;
-        pixels.setTexture(pixelsTexture, true);
-
-
-
         if (sf::Mouse::isButtonPressed(sf::Mouse::Left)) {
             deleteVoxel(cam, world);
         }
         if (sf::Mouse::isButtonPressed(sf::Mouse::Right)) {
             addVoxel(cam, world);
         }
-        sf::Vector2i mousexy = sf::Mouse::getPosition(window);
-        cam->angleX += (mouseCenter.x - mousexy.x) * mouseSensitivity;
-        cam->angleY += (mouseCenter.y - mousexy.y) * mouseSensitivity;
+        /* apply accumulated motion; the sign matches the old center-offset formula */
+        cam->angleX += mouseDelta.x * mouseSensitivity;
+        cam->angleY += mouseDelta.y * mouseSensitivity;
+        mouseDelta = sf::Vector2i(0, 0);
+        /* keep the pointer near the center so it can't hit the window edge */
         sf::Mouse::setPosition(mouseCenter, window);
+        lastMousePos = mouseCenter;
+        warpPending = true;
         if (cam->angleY > 89.)
             cam->angleY = 89.;
         if (cam->angleY < -89.)
             cam->angleY = -89.;
 
-        buildDirectionOfStraightMove(cam, moveStraight);
-        buildDirectionOfNotSoStraightMove(cam, moveNotStraight);
+        buildDirectionOfStraightMove(cam, &moveStraight);
+        buildDirectionOfNotSoStraightMove(cam, &moveNotStraight);
         if (sf::Keyboard::isKeyPressed(sf::Keyboard::W))
             if (bounds(cam->eyePosition + Normalize(moveStraight) * cam->speed))
                 cam->eyePosition = cam->eyePosition + Normalize(moveStraight) * cam->speed;
@@ -854,10 +858,10 @@ int main() {
             if (bounds(cam->eyePosition - Normalize(moveNotStraight) * cam->speed))
                 cam->eyePosition = cam->eyePosition - Normalize(moveNotStraight) * cam->speed;
         if (sf::Keyboard::isKeyPressed(sf::Keyboard::LShift))
-            if (bounds(cam->eyePosition + make_double3(0, cam->speed, 0)))
+            if (bounds(cam->eyePosition + make_float3(0.f, cam->speed, 0.f)))
                 cam->eyePosition.y += cam->speed;
         if (sf::Keyboard::isKeyPressed(sf::Keyboard::Space))
-            if (bounds(cam->eyePosition - make_double3(0, cam->speed, 0)))
+            if (bounds(cam->eyePosition - make_float3(0.f, cam->speed, 0.f)))
                 cam->eyePosition.y -= cam->speed;
         window.clear(sf::Color::Magenta);
         window.draw(pixels);
@@ -865,11 +869,14 @@ int main() {
             window.draw(crossSprite);
         window.display();
     }
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
     cudaFree(world);
     cudaFree(screen);
-    cudaFree(cam);
-    std::cout << "frames: " << frames-1 << std::endl;
-    std::cout << "sumScreenRenderTime: " << sumScreenRenderTime << std::endl;
+    free(hostScreen);
+    std::cout << "frames: " << frames << std::endl;
+    std::cout << "sumScreenRenderTime: " << sumScreenRenderTime << " ms, avg: "
+              << (frames ? sumScreenRenderTime / frames : 0.f) << " ms/frame" << std::endl;
 
     return 0;
 }
